@@ -80,10 +80,10 @@ val rainFeaturesDF = va.transform(trainSel).select("features","RainTomorrow")
 // Cambiar la label
 val indiceClase= new StringIndexer().setInputCol("RainTomorrow").setOutputCol("label").setStringOrderType("alphabetDesc")
 
-val rainFeaturesLabelDF = indiceClase.fit(rainFeaturesDF).transform(rainFeaturesDF).drop("RainTomorrow")
+val rainDF = indiceClase.fit(rainFeaturesDF).transform(rainFeaturesDF).drop("RainTomorrow")
 
-// Partición de los datos (para tener conjunto de prueba para evaluar los árboles)
-val Array(trainRainDF, testRainDF) = rainFeaturesLabelDF.randomSplit(Array(0.66, 0.34), seed=0)
-
-
-trainRainDF.show(5)
+/* // No es necesario ya que CrossValidation hace la particion
+val Array(trainRainDF, testRainDF) = rainDF.randomSplit(Array(0.66, 0.34), seed=0)
+val validationDF = testRainDF
+*/
+rainDF.show(5)
