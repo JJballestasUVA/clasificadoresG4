@@ -65,8 +65,8 @@ val weatherDFInt = atributosInt.foldLeft(weatherDF) { (df, attr) =>
 val dfPrepared = weatherDFInt
 
 // 2) Separación por clase
-val dfYes = dfLabel.filter(lower(col("RainTomorrow")) === "yes")
-val dfNo  = dfLabel.filter(lower(col("RainTomorrow")) === "no")
+val dfYes = dfPrepared.filter(lower(col("RainTomorrow")) === "yes")
+val dfNo  = dfPrepared.filter(lower(col("RainTomorrow")) === "no")
 
 // 3) División aleatoria controlada dentro de cada clase (80/20)
 val Array(yesTrain, yesTest) = dfYes.randomSplit(split, seed)
