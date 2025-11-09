@@ -99,7 +99,7 @@ def distributionView(df: DataFrame, name: String): Unit = {
 
 // Conteos globales y distribución
 println(s" Conteos globales y distribución Train: ${trainDF.count()}  |  Test: ${testDF.count()}")
-distributionView(dfLabel, "Global (antes del split)")
+distributionView(dfPrepared, "Global (antes del split)")
 distributionView(trainDF, "Train")
 distributionView(testDF, "Test")
   
@@ -131,7 +131,7 @@ def normalizeLabelAndBasics(df: DataFrame): DataFrame = {
 }
 
 // (A) Aplica limpieza  PRE-split
-val df0 = normalizeLabelAndBasics(dfLabel)
+val df0 = normalizeLabelAndBasics(dfPrepared)
   .transform{ d =>
     val missingTokens = Seq("NA","N/A","NULL","NONE","MISSING","-","?")
     Seq("WindGustDir","WindDir9am","WindDir3pm").foldLeft(d){ (acc,c) =>
