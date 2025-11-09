@@ -76,3 +76,5 @@ val cvModel = cv.fit(rainDF)
 val bestModel = cvModel.bestModel.asInstanceOf[DecisionTreeClassificationModel]
 
 bestModel.extractParamMap().toSeq.foreach(println) // Observamos que el arbol escgido tiene maxDepth = 5 y maxBins =32
+
+bestModel.write.overwrite().save("./ModeloDT")

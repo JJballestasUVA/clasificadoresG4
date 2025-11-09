@@ -80,6 +80,8 @@ val rainFeaturesDF = va.transform(trainSel).select("features","RainTomorrow")
 // Cambiar la label
 val indiceClase= new StringIndexer().setInputCol("RainTomorrow").setOutputCol("label").setStringOrderType("alphabetDesc")
 
+
+
 val rainDF = indiceClase.fit(rainFeaturesDF).transform(rainFeaturesDF).drop("RainTomorrow")
 
 /* // No es necesario ya que CrossValidation hace la particion
