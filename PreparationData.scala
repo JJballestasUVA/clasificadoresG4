@@ -31,12 +31,31 @@ weatherDF.cache()
 val seed = 2025L
 val split = Array(0.8, 0.2)
 
-// 1) Mantener solo registros con etiqueta válida ("Yes"/"No"), ignorando nulos/NA
-val dfLabel = weatherDF.filter(
-  lower(col("RainTomorrow")).isin("yes", "no")
-)
+
 
 weatherDF.unpersist()
+
+
+val atributosDouble = Seq(
+  "MinTemp", "MaxTemp", "Temp9am","Temp3pm",
+  "Rainfall", "Evaporation", "Sunshine",
+  "Pressure9am", "Pressure3pm",
+  "Humidity9am", "Humidity3pm",
+  "WindGustSpeed", "WindSpeed9am", "WindSpeed3pm"
+)
+val atributosInt = Seq("Cloud9am", "Cloud3pm")
+
+// Conversion de tipos 
+
+val weatherDFDouble = atributosDouble.foldLeft(weatherDF) { (df, attr) =>
+  df.withColumn(attr, col(attr).cast("double"))
+}
+
+val weatherDFInt = atributosInt.foldLeft(weatherDF) { (df, attr) =>
+  df.withColumn(attr, col(attr).cast("int"))
+}
+
+val dfPrepared = weatherDFInt
 
 // 2) Separación por clase
 val dfYes = dfLabel.filter(lower(col("RainTomorrow")) === "yes")
