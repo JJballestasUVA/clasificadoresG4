@@ -36,6 +36,8 @@ val dfLabel = weatherDF.filter(
   lower(col("RainTomorrow")).isin("yes", "no")
 )
 
+weatherDF.unpersist()
+
 // 2) Separación por clase
 val dfYes = dfLabel.filter(lower(col("RainTomorrow")) === "yes")
 val dfNo  = dfLabel.filter(lower(col("RainTomorrow")) === "no")
