@@ -11,37 +11,39 @@ val FILE = "weatherAUS.csv"
 val weatherDF = spark.read.option("header", "true").option("inferSchema", "true").option("delimiter", ",").csv(s"$PATH/$FILE")
 
 weatherDF.cache()
- 
 
-val esVacioONulo = (c: Column) => {
-  c.isNull ||    
-  trim(c) === "" || 
-  lower(c).isin("na", "nan", "null", "n/a", "none", "missing")
-}
+
 
 
 //esta parte se quita al unir los archivos
 
 
- 
+
+
+
+
+val esVacioONulo = (c: Column) => {
+  c.isNull ||
+  trim(c) === "" ||
+  lower(c).isin("na", "nan", "null", "n/a", "none", "missing")
+}
+
+
 // ===== PARTICIÓN ESTRATIFICADA POR RainTomorrow (80/20) =====
 // Se realiza un particionado estratificado de los datos en función de la variable objetivo "RainTomorrow":
 //   1) Se filtran únicamente los registros con etiquetas válidas ("Yes"/"No").
 //   2) Se separan los datos en dos subconjuntos según la clase (Yes y No).
 //   3) Cada subconjunto se divide aleatoriamente en 80% entrenamiento y 20% test, usando una semilla fija para reproducibilidad.
 //   4) Se recomponen los conjuntos de entrenamiento y test uniendo las particiones de cada clase, garantizando la misma proporción de etiquetas.
- 
+
 // Finalmente, se muestran conteos y distribuciones de clases en los conjuntos global, train y test para verificar la estratificación.
-// [Memoria] “particionado estratificado 80/20 por RainTomorrow” con semilla. 
- 
+// [Memoria] “particionado estratificado 80/20 por RainTomorrow” con semilla.
+
 
 val seed = 2025L
 val split = Array(0.8, 0.2)
 
-
-
-weatherDF.unpersist()
-
+ 
 
 val atributosDouble = Seq(
   "MinTemp", "MaxTemp", "Temp9am","Temp3pm",
@@ -52,17 +54,26 @@ val atributosDouble = Seq(
 )
 val atributosInt = Seq("Cloud9am", "Cloud3pm")
 
-// Conversion de tipos 
+// Conversion de tipos
 
 val weatherDFDouble = atributosDouble.foldLeft(weatherDF) { (df, attr) =>
   df.withColumn(attr, col(attr).cast("double"))
 }
 
-val weatherDFInt = atributosInt.foldLeft(weatherDF) { (df, attr) =>
+ 
+val dfWithInts = atributosInt.foldLeft(weatherDF) { (df, attr) =>
   df.withColumn(attr, col(attr).cast("int"))
 }
 
-val dfPrepared = weatherDFInt
+val dfPrepared = atributosDouble.foldLeft(dfWithInts) { (df, attr) =>
+  df.withColumn(attr, col(attr).cast("double"))
+}
+
+weatherDF.unpersist()
+
+
+
+
 
 // 2) Separación por clase
 val dfYes = dfPrepared.filter(lower(col("RainTomorrow")) === "yes")
@@ -76,7 +87,7 @@ val Array(noTrain,  noTest)  = dfNo.randomSplit(split,  seed)
 val trainDF = yesTrain.unionByName(noTrain)
 val testDF  = yesTest.unionByName(noTest)
 
- 
+
 
 // --------- CHECKS DE VERIFICACIÓN ----------
 // Se define una función auxiliar dist que muestra la distribución de la variable objetivo "RainTomorrow"
@@ -102,17 +113,17 @@ println(s" Conteos globales y distribución Train: ${trainDF.count()}  |  Test: 
 distributionView(dfPrepared, "Global (antes del split)")
 distributionView(trainDF, "Train")
 distributionView(testDF, "Test")
-  
-    
-  
+
+
+
   //(NTAIE, Número Total de Ausentes/Inconsistentes Eliminados
-  //(NTOE, Número Total de Outliers Eliminados). 
-  //NTAIE+NTOE (que es la tasa de error que proporcionan las métricas) 
-  //tasa de no clasificados: (NTAIE+NTOE)/(tamaño conjunto de prueba). 
+  //(NTOE, Número Total de Outliers Eliminados).
+  //NTAIE+NTOE (que es la tasa de error que proporcionan las métricas)
+  //tasa de no clasificados: (NTAIE+NTOE)/(tamaño conjunto de prueba).
   //La tasa de no clasificados debe ser al menos un orden de magnitud menor que la tasa de error.
-  
-  
-  
+
+
+
 def normalizeLabelAndBasics(df: DataFrame): DataFrame = {
   val base =
     if (df.schema("Date").dataType != DateType) df.withColumn("Date", to_date(col("Date")))
@@ -141,10 +152,10 @@ val df0 = normalizeLabelAndBasics(dfPrepared)
       } else acc
     }
   }
- 
+
 // (B) Filtra filas con etiqueta válida
 val dfClean = df0.filter(col("RainTomorrow").isin("Yes","No"))
- 
+
 // (C) Estratificación por clase
 val dfYes = dfClean.filter(col("RainTomorrow") === "Yes")
 val dfNo  = dfClean.filter(col("RainTomorrow") === "No")
@@ -168,7 +179,7 @@ def normalizeRest(df: DataFrame): DataFrame = {
 val trainN = normalizeRest(trainDF)
 val testN  = normalizeRest(testDF)
 
-  
+
 
 println(s"Train: ${trainN.count()}  |  Test: ${testN.count()}")
 distributionView(dfClean, "Global (antes del split, ya normalizado)")
@@ -179,7 +190,7 @@ distributionView(testN,  "Test  normalizado")
   println(s" - normalNumCols: variables con distribución aproximadamente normal (ej. temperaturas, presión)")
   println(s"  - nonNormalNumCols: variables con distribución no normal o sesgada (ej. lluvia, humedad, viento, nubes)")
   println(s" Además, se identifican columnas categóricas de viento (direcciones)")
- 
+
 val normalNumCols = Seq("MinTemp","MaxTemp","Temp9am","Temp3pm","Pressure9am","Pressure3pm")
   .filter(trainN.columns.contains)
 val nonNormalNumCols = Seq(
@@ -198,13 +209,13 @@ def classMean(train: DataFrame, c: String): DataFrame =
 
 def classMedian(train: DataFrame, c: String): DataFrame =
   train.groupBy("RainTomorrow").agg(p50(c).alias(s"${c}_rt_median"))
-  
+
   def locClassMean(train: DataFrame, c: String): DataFrame =
   train.groupBy("Location","RainTomorrow").agg(avg(col(c)).alias(s"${c}_locrt_mean"))
-  
+
   def locClassMedian(train: DataFrame, c: String): DataFrame =
   train.groupBy("Location","RainTomorrow").agg(p50(c).alias(s"${c}_locrt_median"))
-  
+
   def modeBy(groups: Seq[String], target: String, df: DataFrame): DataFrame = {
   val counts = df.groupBy((groups :+ target).map(col): _*).count()
   val w = Window.partitionBy(groups.map(col): _*).orderBy(desc("count"), col(target))
