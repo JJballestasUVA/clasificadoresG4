@@ -13,6 +13,13 @@ val weatherDF = spark.read.option("header", "true").option("inferSchema", "true"
 weatherDF.cache()
  
 
+val esVacioONulo = (c: Column) => {
+  c.isNull ||    
+  trim(c) === "" || 
+  lower(c).isin("na", "nan", "null", "n/a", "none", "missing")
+}
+
+
 //esta parte se quita al unir los archivos
 
 
@@ -173,12 +180,13 @@ distributionView(testN,  "Test  normalizado")
   println(s"  - nonNormalNumCols: variables con distribución no normal o sesgada (ej. lluvia, humedad, viento, nubes)")
   println(s" Además, se identifican columnas categóricas de viento (direcciones)")
  
-  val normalNumCols = Seq("MinTemp","MaxTemp","Temp9am","Temp3pm","Pressure9am","Pressure3pm")
+val normalNumCols = Seq("MinTemp","MaxTemp","Temp9am","Temp3pm","Pressure9am","Pressure3pm")
   .filter(trainN.columns.contains)
 val nonNormalNumCols = Seq(
   "Rainfall","Evaporation","Sunshine","Humidity9am","Humidity3pm",
   "Cloud9am","Cloud3pm","WindGustSpeed","WindSpeed9am","WindSpeed3pm"
 ).filter(trainN.columns.contains)
+
 val windCatCols = Seq("WindGustDir","WindDir9am","WindDir3pm").filter(trainN.columns.contains)
 
 
@@ -214,7 +222,9 @@ def applyClassImpute(df: DataFrame, train: DataFrame): DataFrame = {
     // Junta las medias calculadas por 'RainTomorrow' al DataFrame actual
     acc.join(rtMean, Seq("RainTomorrow"), "left")
         // Reemplaza los nulos en 'c' con la media de su clase
-        .withColumn(c, when(col(c).isNull, col(s"${c}_rt_mean")).otherwise(col(c)))
+        .withColumn(c,
+          when(esVacioONulo(col(c)), col(s"${c}_rt_mean"))
+          .otherwise(col(c)))
         // Elimina la columna de la media auxiliar después de la imputación
         .drop(s"${c}_rt_mean")
   }
@@ -227,7 +237,9 @@ def applyClassImpute(df: DataFrame, train: DataFrame): DataFrame = {
     // Junta las medianas calculadas por 'RainTomorrow' al DataFrame actual
     acc.join(rtMedian, Seq("RainTomorrow"), "left")
         // Reemplaza los nulos en 'c' con la mediana de su clase
-        .withColumn(c, when(col(c).isNull, col(s"${c}_rt_median")).otherwise(col(c)))
+        .withColumn(c,
+          when(esVacioONulo(col(c)), col(s"${c}_rt_median"))
+          .otherwise(col(c)))
         // Elimina la columna de la mediana auxiliar
         .drop(s"${c}_rt_median")
   }

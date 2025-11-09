@@ -7,6 +7,9 @@ import org.apache.spark.sql.types.IntegerType
 
 :load ./PreparationData.scala
 
+// Quitar cuando PreparationData esté completo
+val trainFinal = trainM1
+val testFinal = testM1
 
 val trainBase = trainFinal.withColumn("Rainfall",col("Rainfall").cast("double"))
 val testBase  = testFinal.withColumn("Rainfall",col("Rainfall").cast("double"))
