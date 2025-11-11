@@ -1,252 +1,266 @@
-import org.apache.spark.ml.feature.{Imputer, StringIndexer, VectorAssembler, StandardScaler}
-import org.apache.spark.sql.{DataFrame, Column}
-import org.apache.spark.sql.functions.{udf, col, cos, sin, sqrt, when, lit}
-import org.apache.spark.sql.types.DoubleType
-import spark.implicits._
-import org.apache.spark.sql.types.IntegerType
-
- 
+// ============================================================
+// VERSIÓN ULTRA-OPTIMIZADA - PreparationDatav4R5
+// Reducción masiva de joins mediante batch processing
+// ============================================================
 
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.sql.{DataFrame, Column}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
+import org.apache.spark.ml.feature.{Imputer, StringIndexer, VectorAssembler, StandardScaler}
 
 Logger.getLogger("org.apache.spark.scheduler.DAGScheduler").setLevel(Level.ERROR)
 
 val PATH = "."
 val FILE = "weatherAUS.csv"
 
-// === 1) Lectura base ===
+// === 1) Lectura y preparación ===
 val weatherDF = spark.read.option("header","true").option("inferSchema","true").option("delimiter",",").csv(s"$PATH/$FILE")
 
-// === 2) Casting único y seguro ===
-val atributosDouble = Seq(
-  "MinTemp","MaxTemp","Temp9am","Temp3pm",
-  "Rainfall","Evaporation","Sunshine",
-  "Pressure9am","Pressure3pm",
-  "Humidity9am","Humidity3pm",
-  "WindGustSpeed","WindSpeed9am","WindSpeed3pm"
-)
+// === 2) Casting (todas las columnas en un solo select) ===
+val atributosDouble = Seq("MinTemp","MaxTemp","Temp9am","Temp3pm","Rainfall","Evaporation","Sunshine","Pressure9am","Pressure3pm","Humidity9am","Humidity3pm","WindGustSpeed","WindSpeed9am","WindSpeed3pm")
 val atributosInt = Seq("Cloud9am","Cloud3pm")
-
-val dfCasted1 = atributosDouble.foldLeft(weatherDF){ (df, c) =>
-  if (df.columns.contains(c)) df.withColumn(c, col(c).cast("double")) else df
-}
-val dfPrepared = atributosInt.foldLeft(dfCasted1){ (df, c) =>
-  if (df.columns.contains(c)) df.withColumn(c, col(c).cast("int")) else df
-}
+val dfPrepared = weatherDF.select(weatherDF.columns.map { c => if (atributosDouble.contains(c)) col(c).cast("double").alias(c) else if (atributosInt.contains(c)) col(c).cast("int").alias(c) else col(c) }: _*)
 
 // === 3) Utilidades de missing ===
-// Categóricas (texto)
-def isMissingStr(c: Column): Column = c.isNull || trim(c) === "" ||lower(trim(c)).isin("na","nan","null","n/a","none","missing")
-
-// Numéricas
+def isMissingStr(c: Column): Column = c.isNull || trim(c) === "" || lower(trim(c)).isin("na","nan","null","n/a","none","missing")
 def isNullNum(c: Column): Column = c.isNull
 
-// === 4) Normaliza etiqueta/fecha y tokens de viento (PRE-split) ===
-def normalizeLabelAndBasics(df: DataFrame): DataFrame = {
-  val base = if (df.schema("Date").dataType != DateType)
-    df.withColumn("Date", to_date(col("Date")))
-  else df
-
-  val stdYN = Seq("RainTomorrow").foldLeft(base){ (acc,c) =>
-    if (acc.columns.contains(c))
-      acc.withColumn(c, when(lower(trim(col(c))) === "yes","Yes").when(lower(trim(col(c))) === "no","No").otherwise(col(c))
-      )
-    else acc
-  }
-
-
-  stdYN.withColumn("Month", month(col("Date"))).withColumn("DayMonth", date_format(col("Date"), "ddMM"))  // <-- NUEVA COLUMNA ddMM
-
-
-}
-
+// === 4) Normalización (todo en un solo select) ===
 val missingTokens = Seq("NA","N/A","NULL","NONE","MISSING","-","?")
+val windCols = Seq("WindGustDir","WindDir9am","WindDir3pm")
+val dfNormalized = dfPrepared.select(dfPrepared.columns.map { c => if (c == "Date") to_date(col("Date")).alias("Date") else if (c == "RainTomorrow") when(lower(trim(col(c))) === "yes","Yes").when(lower(trim(col(c))) === "no","No").otherwise(col(c)).alias(c) else if (windCols.contains(c)) when(upper(trim(col(c))).isin(missingTokens.map(_.toUpperCase): _*), lit(null)).otherwise(upper(trim(col(c)))).alias(c) else col(c) }: _*).withColumn("Month", month(col("Date"))).withColumn("DayMonth", date_format(col("Date"), "ddMM"))
 
-val df0 = normalizeLabelAndBasics(dfPrepared).transform { d =>
-  Seq("WindGustDir","WindDir9am","WindDir3pm").foldLeft(d){ (acc,c) =>
-    if (acc.columns.contains(c)) {
-      val v = trim(upper(col(c)))
-      acc.withColumn(c, when(v.isin(missingTokens: _*), lit(null:String)).otherwise(v))
-    } else acc
-  }
-}
-
-// === 5) Filtra etiquetas válidas ===
-val dfClean = df0.filter(col("RainTomorrow").isin("Yes","No"))
-
-// === 6) Split estratificado 80/20 (único) ===
+// === 5) Split estratificado ===
 val seed = 2025L
+val dfClean = dfNormalized.filter(col("RainTomorrow").isin("Yes","No"))
 val Array(yesTrain, yesTest) = dfClean.filter(col("RainTomorrow")==="Yes").randomSplit(Array(0.8,0.2), seed)
-val Array(noTrain ,  noTest)  = dfClean.filter(col("RainTomorrow")==="No" ).randomSplit(Array(0.8,0.2), seed)
+val Array(noTrain, noTest) = dfClean.filter(col("RainTomorrow")==="No").randomSplit(Array(0.8,0.2), seed)
+val trainN = yesTrain.unionByName(noTrain).persist()
+val testN = yesTest.unionByName(noTest).persist()
 
-val trainDF = yesTrain.unionByName(noTrain)
-val testDF  = yesTest.unionByName(noTest)
+println(s"\n DataFrames cacheados: Train=${trainN.count()}, Test=${testN.count()}")
 
-// === 7) Normalizaciones post-split ===
-def normalizeRest(df: DataFrame): DataFrame = {
-  Seq("WindGustDir","WindDir9am","WindDir3pm").foldLeft(df){ (acc,c) =>
-    if (acc.columns.contains(c)) acc.withColumn(c, upper(trim(col(c)))) else acc
-  }
-}
-val trainN = normalizeRest(trainDF)
-val testN  = normalizeRest(testDF)
+// === 6) Configuración de columnas ===
+val normalNumCols = Seq("MinTemp","MaxTemp","Temp9am","Temp3pm","Pressure9am","Pressure3pm")
+val nonNormalNumCols = Seq("Rainfall","Evaporation","Sunshine","Humidity9am","Humidity3pm","Cloud9am","Cloud3pm","WindGustSpeed","WindSpeed9am","WindSpeed3pm")
+val discreteNumCols = Seq("Cloud9am","Cloud3pm")
+val windDirCols = Seq("WindGustDir","WindDir9am","WindDir3pm")
 
-// === 8) Columnas según distribución esperada ===
-val normalNumCols = Seq("MinTemp","MaxTemp","Temp9am","Temp3pm","Pressure9am","Pressure3pm").filter(trainN.columns.contains)
-
-val nonNormalNumCols = Seq("Rainfall","Evaporation","Sunshine","Humidity9am","Humidity3pm",
-  "Cloud9am","Cloud3pm","WindGustSpeed","WindSpeed9am","WindSpeed3pm").filter(trainN.columns.contains)
-
-val discrete_NumCols= Seq("Cloud9am","Cloud3pm").filter(trainN.columns.contains)
-
-
-val windCatCols = Seq("WindGustDir","WindDir9am","WindDir3pm").filter(trainN.columns.contains)
-
-// === 9) Métricas por clase para imputación ===
-
+// === 7) Funciones de agregación  ===
 def p50(colName: String): Column = expr(s"percentile_approx($colName, 0.5)")
 
+// Calcular  estadísticas 
+def calculateAllStatsForTrain(train: DataFrame, numCols: Seq[String], discCols: Seq[String]): DataFrame = {
+  val stats = numCols.flatMap(c => Seq(avg(col(c)).alias(s"${c}_mean"), p50(c).alias(s"${c}_median"))) ++ discCols.map(c => avg(col(c)).alias(s"${c}_mean"))
+  train.groupBy("Location","DayMonth","RainTomorrow").agg(stats.head, stats.tail: _*)
+}
 
-//train DataFrame base donde están los datos.   trainN
-//c     Nombre de la columna que quieres agregar.       "Temp3pm"
-//keys  Lista de columnas por las que agrupar.  Seq("Location","RainTomorrow")
-//aggCol        Expresión de agregación que aplicarás.  avg(col(c)) o p50(c)
-//suffix        Texto que se añadirá al nombre de la nueva columna para identificarla.
+def calculateAllStatsForTest(train: DataFrame, numCols: Seq[String], discCols: Seq[String]): DataFrame = {
+  val stats = numCols.flatMap(c => Seq(avg(col(c)).alias(s"${c}_mean"), p50(c).alias(s"${c}_median"))) ++ discCols.map(c => avg(col(c)).alias(s"${c}_mean"))
+  train.groupBy("Location","DayMonth").agg(stats.head, stats.tail: _*)
+}
 
- def aggregationBy( train: DataFrame, c: String, keys: Seq[String], aggCol: Column, suffix: String
+// Calcular modas de viento en un solo paso
+def calculateWindModesForTrain(train: DataFrame): DataFrame = {
+  windDirCols.map { c => train.filter(col(c).isNotNull && !isMissingStr(col(c))).groupBy("Location","DayMonth","RainTomorrow",c).agg(count(lit(1)).alias("cnt")).groupBy("Location","DayMonth","RainTomorrow").agg(expr(s"max_by($c, cnt)").alias(s"${c}_mode")) }.reduce((df1,df2) => df1.join(df2, Seq("Location","DayMonth","RainTomorrow"), "outer"))
+}
+
+def calculateWindModesForTest(train: DataFrame): DataFrame = {
+  windDirCols.map { c => train.filter(col(c).isNotNull && !isMissingStr(col(c))).groupBy("Location","DayMonth",c).agg(count(lit(1)).alias("cnt")).groupBy("Location","DayMonth").agg(expr(s"max_by($c, cnt)").alias(s"${c}_mode")) }.reduce((df1,df2) => df1.join(df2, Seq("Location","DayMonth"), "outer"))
+}
+
+def calculateRainTodayModeForTrain(train: DataFrame): DataFrame = {
+  train.withColumn("RainToday", upper(trim(col("RainToday")))).filter(!isMissingStr(col("RainToday"))).groupBy("RainTomorrow","RainToday").agg(count(lit(1)).alias("cnt")).groupBy("RainTomorrow").agg(expr("max_by(RainToday, cnt)").alias("RainToday_mode"))
+}
+
+// === 8) Imputación estadísticas ===
+
+//====================estadisticas sin jerarquia =============================
+def applyBatchImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
+  println("  → Calculando todas las estadísticas...")
+  val allCols = normalNumCols ++ nonNormalNumCols
+  val columnsToSelect = Seq("Location","DayMonth","RainTomorrow") ++ allCols
+  
+  val statsDF = calculateAllStatsForTrain(
+    train.select(columnsToSelect.map(col): _*).filter(allCols.map(c => col(c).isNotNull).reduce(_ || _)), 
+    normalNumCols ++ nonNormalNumCols.diff(discreteNumCols), 
+    discreteNumCols
+  )
+  
+  val dfJoined = df.join(statsDF, Seq("Location","DayMonth","RainTomorrow"), "left")
+  
+  val imputedCols = df.columns.map { c =>
+    if (normalNumCols.contains(c)) when(col(c).isNull, coalesce(col(s"${c}_mean"))).otherwise(col(c)).alias(c)
+    else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) when(col(c).isNull, coalesce(col(s"${c}_median"))).otherwise(col(c)).alias(c)
+    else if (discreteNumCols.contains(c)) when(col(c).isNull, round(coalesce(col(s"${c}_mean"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
+    else col(c)
+  }
+  
+  dfJoined.select(imputedCols: _*)
+}
+
+def applyBatchImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
+   val allCols = normalNumCols ++ nonNormalNumCols
+  val statsDF = calculateAllStatsForTest(train.select("Location","DayMonth" +: allCols: _*).filter(allCols.map(c => col(c).isNotNull).reduce(_ || _)), normalNumCols ++ nonNormalNumCols.diff(discreteNumCols), discreteNumCols)
+
+  val dfJoined = df.join(statsDF, Seq("Location","DayMonth"), "left")
+  
+  val imputedCols = df.columns.map { c =>
+    if (normalNumCols.contains(c)) when(col(c).isNull, col(s"${c}_mean")).otherwise(col(c)).alias(c)
+    else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) when(col(c).isNull, col(s"${c}_median")).otherwise(col(c)).alias(c)
+    else if (discreteNumCols.contains(c)) when(col(c).isNull, round(coalesce(col(s"${c}_mean"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
+    else col(c)
+  }
+  
+  dfJoined.select(imputedCols: _*)
+}
+
+//=======================================
+
+
+// ============================================================
+// 10) IMPUTACIÓN JERÁRQUICA
+// ============================================================
+
+def calculateStatsTest(
+    df: DataFrame,
+    normalCols: Seq[String],
+    nonNormalCols: Seq[String],
+    discreteCols: Seq[String],
+    groupCols: Seq[String]
 ): DataFrame = {
-  train.groupBy(keys.map(col): _*).agg(aggCol.alias(s"${c}_${suffix}"))
+
+  import org.apache.spark.sql.functions._
+
+  // --- Calcular medias ---
+  val meanAggs = normalCols.map { c =>
+    avg(col(c)).alias(s"${c}_mean_${groupCols.mkString("_")}")
+  }
+
+  // --- Calcular medianas ---
+  val medianAggs = nonNormalCols.map { c =>
+    expr(s"percentile_approx($c, 0.5)").alias(s"${c}_median_${groupCols.mkString("_")}")
+  }
+
+  // --- Calcular medias para discretas ---
+  val discreteAggs = discreteCols.map { c =>
+    avg(col(c)).alias(s"${c}_mean_${groupCols.mkString("_")}")
+  }
+
+  // --- Un solo groupBy con todas las agregaciones ---
+  val aggExprs = meanAggs ++ medianAggs ++ discreteAggs
+  df.groupBy(groupCols.map(col): _*).agg(aggExprs.head, aggExprs.tail: _*)
 }
 
-// ===================
-// 1) Media (mean)
-// ===================
 
-  // Por Location + DayMonth + clase para el conjunto de Train
-def meanByLocDayMonthClass(train: DataFrame, c: String): DataFrame =aggregationBy(train, c, Seq("Location","DayMonth","RainTomorrow"), avg(col(c)), s"locdaycla_mean")
+def calculateStatsTrain(
+    df: DataFrame,
+    normalCols: Seq[String],
+    nonNormalCols: Seq[String],
+    discreteCols: Seq[String],
+    groupCols: Seq[String]
+): DataFrame = {
 
-// Por DayMonth + Location Para el Conjunto de Test
-def meanByLocDayMonth(train: DataFrame, c: String): DataFrame =aggregationBy(train, c, Seq("Location","DayMonth"), avg(col(c)), s"locday_mean")
+  import org.apache.spark.sql.functions._
 
+  // --- Calcular medias ---
+  val meanAggs = normalCols.map { c =>
+    avg(col(c)).alias(s"${c}_mean_${groupCols.mkString("_")}")
+  }
 
+  // --- Calcular medianas ---
+  val medianAggs = nonNormalCols.map { c =>
+    expr(s"percentile_approx($c, 0.5)").alias(s"${c}_median_${groupCols.mkString("_")}")
+  }
 
-// ====================
-// 2) MEDIANAS (median)
-// ====================
+  // --- Calcular medias para discretas ---
+  val discreteAggs = discreteCols.map { c =>
+    avg(col(c)).alias(s"${c}_mean_${groupCols.mkString("_")}")
+  }
 
- // Por Location + DayMonth + clase para el conjunto de Train
-def medianByLocDayMonthClass(train: DataFrame, c: String): DataFrame =aggregationBy(train, c,  Seq("Location","DayMonth","RainTomorrow"), p50(c), s"locdaycla_median")
-
-// Por DayMonth + Location Para el Conjunto de Test
-def medianByLocDayMonth(train: DataFrame, c: String): DataFrame =aggregationBy(train, c, Seq("Location","DayMonth"), p50(c), s"locday_median")
-
-
-
-// ==========================
-// 3) MODA CATEGÓRICA genérica
-// ==========================
-def modeBy(groups: Seq[String], target: String, df: DataFrame): DataFrame = {
-  val counted = df.groupBy((groups :+ target).map(col): _*).agg(count(lit(1)).alias("cnt"))
-  counted.groupBy(groups.map(col): _*).agg(expr(s"max_by($target, cnt)").alias(target))
+  // --- Un solo groupBy con todas las agregaciones ---
+  val aggExprs = meanAggs ++ medianAggs ++ discreteAggs
+  df.groupBy(groupCols.map(col): _*).agg(aggExprs.head, aggExprs.tail: _*)
 }
 
-val windDirCols = Seq("WindGustDir", "WindDir9am", "WindDir3pm")
 
- // Por Location + DayMonth + clase para el conjunto de Train
-def modeByLocDayMonthClass(df: DataFrame, target: String): DataFrame = modeBy(Seq("Location","DayMonth","RainTomorrow"), target, df)
+def applyBatchImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
+  // --- Precalcular estadísticas ---
+  val statsDayMonthClass = calculateStatsTrain(train, normalNumCols, nonNormalNumCols, discreteNumCols, Seq("Location","DayMonth","RainTomorrow"))
+  val statsLocClass      = calculateStatsTrain(train, normalNumCols, nonNormalNumCols, discreteNumCols, Seq("Location","RainTomorrow"))
+  
+  // --- Un solo join con ambas tablas ---
+  val dfJoined = df
+    .join(statsDayMonthClass, Seq("Location","DayMonth","RainTomorrow"), "left")
+    .join(statsLocClass, Seq("Location","RainTomorrow"), "left")
 
- // Por Location + DayMonth + clase para el conjunto de Test
-def modeByLocDayMonth(df: DataFrame, target: String): DataFrame = modeBy(Seq("Location","DayMonth"), target, df)
-
-
-//Imputación para Train
-def imputeDiscreteNearestMeanByTrain(df: DataFrame, train: DataFrame, c: String): DataFrame = {
-  // Calcula la media por Location, DayMonth y Clase (RainTomorrow)
-  val meanDF = meanByLocDayMonthClass(train.filter(col(c).isNotNull), c)
-
-  df.join(meanDF, Seq("Location","DayMonth","RainTomorrow"), "left")
-    .withColumn(
-      c,
+  // --- Aplicar imputación jerárquica ---
+  val imputadas = df.columns.map { c =>
+    if (normalNumCols.contains(c)) {
       when(
         col(c).isNull,
-        // Redondea la media al entero más cercano y hace cast a Int
-        round(col(s"${c}_locdaycla_mean")).cast("int")
-      ).otherwise(col(c))
-    ).drop(s"${c}_locdaycla_mean")
-}
-
-def imputeDiscreteNearestMeanByTest(df: DataFrame, train: DataFrame, c: String): DataFrame = {
-  // Calcula la media por Location, DayMonth
-  val meanDF = meanByLocDayMonth(train.filter(col(c).isNotNull), c)
-
-  df.join(meanDF, Seq("Location","DayMonth"), "left")
-    .withColumn(
-      c,
+        coalesce(col(s"${c}_mean_Location_DayMonth_RainTomorrow"), col(s"${c}_mean_Location_RainTomorrow"))
+      ).otherwise(col(c)).alias(c)
+    }
+    else if (nonNormalNumCols.contains(c)) {
       when(
         col(c).isNull,
-        // Redondea la media al entero más cercano y hace cast a Int
-        round(col(s"${c}_locday_mean")).cast("int")
-      ).otherwise(col(c))
-    ).drop(s"${c}_locday_mean")
+        coalesce(col(s"${c}_median_Location_DayMonth_RainTomorrow"), col(s"${c}_median_Location_RainTomorrow"))
+      ).otherwise(col(c)).alias(c)
+    }
+    else if (discreteNumCols.contains(c)) {
+      when(
+        col(c).isNull,
+        round(
+          coalesce(col(s"${c}_mean_Location_DayMonth_RainTomorrow"), col(s"${c}_mean_Location_RainTomorrow"))
+        ).cast("int")
+      ).otherwise(col(c)).alias(c)
+    }
+    else col(c)
+  }
+
+  dfJoined.select(imputadas: _*)
 }
 
 
-def imputeNonNormalByTrain(df: DataFrame, train: DataFrame, c: String): DataFrame = {
-  val sLocMn  = s"${c}_locdaycla_median"
+def applyBatchImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
+  // --- Precalcular estadísticas ---
+  val statsDayMonth = calculateStatsTest(train, normalNumCols, nonNormalNumCols, discreteNumCols, Seq("Location","DayMonth"))
+  val statsLoc      = calculateStatsTest(train, normalNumCols, nonNormalNumCols, discreteNumCols, Seq("Location"))
+  
+  // --- Un solo join con ambas tablas ---
+  val dfJoined = df
+    .join(statsDayMonth, Seq("Location","DayMonth"), "left")
+    .join(statsLoc, Seq("Location"), "left")
 
-  val j1 = df.join(medianByLocDayMonthClass(train.filter(col(c).isNotNull), c),
-                   Seq("Location","DayMonth","RainTomorrow"), "left")
+  // --- Aplicar imputación jerárquica ---
+  val imputadas = df.columns.map { c =>
+    if (normalNumCols.contains(c)) {
+      when(
+        col(c).isNull,
+        coalesce(col(s"${c}_mean_Location_DayMonth"), col(s"${c}_mean_Location"))
+      ).otherwise(col(c)).alias(c)
+    }
+    else if (nonNormalNumCols.contains(c)) {
+      when(
+        col(c).isNull,
+        coalesce(col(s"${c}_median_Location_DayMonth"), col(s"${c}_median_Location"))
+      ).otherwise(col(c)).alias(c)
+    }
+    else if (discreteNumCols.contains(c)) {
+      when(
+        col(c).isNull,
+        round(
+          coalesce(col(s"${c}_mean_Location_DayMonth"), col(s"${c}_mean_Location"))
+        ).cast("int")
+      ).otherwise(col(c)).alias(c)
+    }
+    else col(c)
+  }
 
-  j1.withColumn(
-      c,
-      when(col(c).isNull, coalesce(col(sLocMn))).otherwise(col(c))
-    ).drop(sLocMn)
-}
-
-def imputeNonNormalByTest(df: DataFrame, train: DataFrame, c: String): DataFrame = {
-  val sLocMn  = s"${c}_locday_median"
-
-  val j1 = df.join(medianByLocDayMonth(train.filter(col(c).isNotNull), c),
-                   Seq("Location","DayMonth"), "left")
-
-  j1.withColumn(
-      c,
-      when(col(c).isNull, coalesce(col(sLocMn))).otherwise(col(c))
-    ).drop(sLocMn)
-}
-
-
-
-
-
-def imputeNormalByTrain(df: DataFrame, train: DataFrame, c: String): DataFrame = {
-  val sLocMn  = s"${c}_locdaycla_mean"
-
-  val j1 = df.join(meanByLocDayMonthClass(train.filter(col(c).isNotNull), c),
-                   Seq("Location","DayMonth","RainTomorrow"), "left")
-
-
-  j1.withColumn(
-      c,
-      when(col(c).isNull, coalesce(col(sLocMn))).otherwise(col(c))
-    ).drop(sLocMn)
-}
-
-
-def imputeNormalByTest(df: DataFrame, train: DataFrame, c: String): DataFrame = {
-  val sLocDm = s"${c}_locday_mean"
-
-  val j1 = df.join(meanByLocDayMonth(train.filter(col(c).isNotNull), c),
-                   Seq("Location","DayMonth"), "left")
-
-  j1.withColumn(
-      c,
-      when(col(c).isNull, col(sLocDm)).otherwise(col(c))
-    ).drop(sLocDm)
+  dfJoined.select(imputadas: _*)
 }
 
 
@@ -255,153 +269,115 @@ def imputeNormalByTest(df: DataFrame, train: DataFrame, c: String): DataFrame = 
 
 
 
+
+def applyRainTodayImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
+  val modeDF = calculateRainTodayModeForTrain(train)
+  df.withColumn("RainToday", upper(trim(col("RainToday")))).join(modeDF, Seq("RainTomorrow"), "left").withColumn("RainToday", when(isMissingStr(col("RainToday")), col("RainToday_mode")).otherwise(col("RainToday"))).drop("RainToday_mode")
+}
+
+def applyRainTodayImputeTest(df: DataFrame): DataFrame = {
+  df.withColumn("RainToday", upper(trim(col("RainToday")))).withColumn("RainToday_pred", when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))).groupBy("DayMonth","RainToday_pred").agg(count(lit(1)).alias("cnt")).groupBy("DayMonth").agg(expr("max_by(RainToday_pred, cnt)").alias("RainToday_mode")).join(df.withColumn("RainToday", upper(trim(col("RainToday")))).withColumn("RainToday_pred", when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))), Seq("DayMonth"), "right").withColumn("RainToday", when(isMissingStr(col("RainToday")), coalesce(col("RainToday_pred"), col("RainToday_mode"))).otherwise(col("RainToday"))).drop("RainToday_pred","RainToday_mode","cnt")
+}
 
 def applyWindImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
-  windDirCols.foldLeft(df){ (acc, c) =>
-    // Moda por Location + RainTomorrow para la columna c, renombrada para evitar ambigüedad
-    val modeDF = modeByLocDayMonthClass(train.filter(col(c).isNotNull), c).withColumnRenamed(c, s"${c}_mode")
-
-    // Join seguro y reemplazo sólo cuando falte
-    acc.join(modeDF, Seq("Location","RainTomorrow"), "left")
-      .withColumn(
-        c,
-        when(isMissingStr(col(c)), col(s"${c}_mode")).otherwise(col(c))
-      ).drop(s"${c}_mode")
-  }
+  println("  → Imputando viento (UN SOLO JOIN)...")
+  val modesDF = calculateWindModesForTrain(train)
+  val dfJoined = df.join(modesDF, Seq("Location","DayMonth","RainTomorrow"), "left")  // ← Agregado DayMonth
+  val imputedCols = df.columns.map { c => if (windDirCols.contains(c)) when(isMissingStr(col(c)), col(s"${c}_mode")).otherwise(col(c)).alias(c) else col(c) }
+  dfJoined.select(imputedCols: _*)
 }
-
 
 def applyWindImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
-  windDirCols.foldLeft(df){ (acc, c) =>
-    // Moda por Location   para la columna c, renombrada para evitar ambigüedad
-    val modeDF = modeByLocDayMonth(train.filter(col(c).isNotNull), c).withColumnRenamed(c, s"${c}_mode")
-
-    // Join seguro y reemplazo sólo cuando falte
-    acc.join(modeDF, Seq("Location"), "left")
-      .withColumn(
-        c,
-        when(isMissingStr(col(c)), col(s"${c}_mode")).otherwise(col(c))
-      ).drop(s"${c}_mode")
-  }
+  println("  → Imputando viento (UN SOLO JOIN - Test)...")
+  val modesDF = calculateWindModesForTest(train)
+  val dfJoined = df.join(modesDF, Seq("Location","DayMonth"), "left")  // ← Agregado DayMonth
+  val imputedCols = df.columns.map { c => if (windDirCols.contains(c)) when(isMissingStr(col(c)), col(s"${c}_mode")).otherwise(col(c)).alias(c) else col(c) }
+  dfJoined.select(imputedCols: _*)
 }
 
 
-//======================================================================================================
+// ============================================================
+// 11) Revisión de valores nulos y "NA"
+// ============================================================
+def revisarNulosYNA(df: DataFrame, nombre: String): Unit = {
+  println(s"\n  Revisión de valores nulos y 'NA' en $nombre")
+  println("=" * 60)
 
-// === 10) Imputación por clase (media/mediana y valor mas cercano a la media) ===
-
-def applyImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
-
-  // Imputación  para columnas normales (media)
-  val withNormal = normalNumCols.foldLeft(df){ (acc, c) =>
-    imputeNormalByTrain(acc, train, c)
+  // Contar nulos y tokens "NA"/"N/A"/"NULL"/"NONE"/"MISSING"/"-"/"?"
+  val tokens = Seq("na","n/a","null","none","missing","-","?")
+  val resumen = df.columns.map { c =>
+    val nulos = df.filter(col(c).isNull).count()
+    val nas   = df.filter(lower(trim(col(c))).isin(tokens: _*)).count()
+    (c, nulos, nas, nulos + nas)
   }
 
-  // Imputación  para columnas no normales (mediana)
-  val withNonNormal = nonNormalNumCols.foldLeft(withNormal){ (acc, c) =>
-    imputeNonNormalByTrain(acc, train, c)
-  }
+  // Mostrar columnas con valores faltantes
+  val dfResumen = resumen.toSeq.toDF("Columna","Nulos","NA_texto","Total_faltantes")
+    .filter(col("Total_faltantes") > 0)
+    .orderBy(desc("Total_faltantes"))
 
- val withNonNormalDiscrete= discrete_NumCols.foldLeft(withNonNormal){ (acc, c) =>
-    imputeDiscreteNearestMeanByTrain(acc, train, c)
+  if (dfResumen.count() == 0)
+    println(s" No se encontraron valores nulos o 'NA' en $nombre.")
+  else {
+    println(s"  Columnas con valores faltantes en $nombre:")
+    dfResumen.show(truncate = false)
   }
-  withNonNormalDiscrete
 }
 
-def applyImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
-
-  // Imputación  para columnas normales (media)
-  val withNormal = normalNumCols.foldLeft(df){ (acc, c) =>
-    imputeNormalByTest(acc, train, c)
-  }
-
-  // Imputación  para columnas no normales (mediana)
-  val withNonNormal = nonNormalNumCols.foldLeft(withNormal){ (acc, c) =>
-    imputeNonNormalByTest(acc, train, c)
-  }
-
- val withNonNormalDiscrete= discrete_NumCols.foldLeft(withNonNormal){ (acc, c) =>
-    imputeDiscreteNearestMeanByTest(acc, train, c)
-  }
-  withNonNormalDiscrete
-}
-
-
-
-def imputeRainTodayByTrain(df: DataFrame): DataFrame = {
-  // Normalizamos RainToday a mayúsculas
-  val base = df.withColumn("RainToday", upper(trim(col("RainToday"))))
-
-  // Calculamos la moda de RainToday por clase (RainTomorrow)
-  val rainTodayMode = modeBy(Seq("RainTomorrow"), "RainToday", base).withColumnRenamed("RainToday", "RainToday_mode")
-
-  // Reemplazamos los nulos o vacíos atendiendo a la clase
-  base.join(rainTodayMode, Seq("RainTomorrow"), "left").withColumn("RainToday",
-      when(isMissingStr(col("RainToday")), col("RainToday_mode")).otherwise(col("RainToday"))
-    ).drop("RainToday_mode")
-}
-
-
-def imputeRainTodayByTest(df: DataFrame): DataFrame = {
-  val base = df.withColumn("RainToday", upper(trim(col("RainToday"))))
-
-  // Crea una columna auxiliar que indica lluvia según Rainfall (>0.0)
-  val withRainfallFlag = base.withColumn("RainToday_pred",
-    when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))
-  )
-
-  // Calcula por DayMonth la moda del valor predicho (para mantener consistencia)
-  val predMode = modeBy(Seq("DayMonth"), "RainToday_pred", withRainfallFlag).withColumnRenamed("RainToday_pred", "RainToday_mode")
-
-  // Une y sustituye RainToday vacío por la predicción o moda por DayMonth
-  withRainfallFlag.join(predMode, Seq("DayMonth"), "left").withColumn("RainToday",
-      when(isMissingStr(col("RainToday")), coalesce(col("RainToday_pred"), col("RainToday_mode")))
-          .otherwise(col("RainToday"))).drop("RainToday_pred", "RainToday_mode")
-}
+// Llamadas al control
 
 
 
 
-//===========================================================================================================
-
-// Imputación numérica
-// Primero: numéricas
-val trainM1 = applyImputeTrain(trainN, trainN)
-val testM1  = applyImputeTest(testN , trainN)
-
-// Luego: imputar RainToday basándose en Rainfall
-val trainM2 = imputeRainTodayByTrain(trainM1)
-val testM2  = imputeRainTodayByTest(testM1)
-
-// Finalmente: imputar viento y demás
-val trainM3 = applyWindImputeTrain(trainM2, trainM2)
-val testM3  = applyWindImputeTest(testM2, trainM2)
+// === 9) PROCESO PRINCIPAL ===
+revisarNulosYNA(trainN, "TRAIN INICIAL")
+revisarNulosYNA(testN , "TEST INICIAL")
 
 
+println("\n" + "="*70)
+println("PROCESO DE IMPUTACIÓN")
+println("="*70)
 
- 
-// === 11) Checks finales ===
-println(s"\n=== RESUMEN FINAL ===")
+println("\n Paso 1: Imputación numérica (1 JOIN)")
+//val trainNumeric = applyBatchImputeTrain(trainN, trainN).localCheckpoint(eager=true)
+//val testNumeric = applyBatchImputeTest(testN, trainN).localCheckpoint(eager=true)
 
-// Conteo simple
-val trainCount = trainM1.count()
-val testCount = testM1.count()
-println(s"Total Train: $trainCount registros")
-println(s"Total Test:  $testCount registros")
+val trainNumeric = applyBatchImputeTrain(trainN, trainN)
+val testNumeric  = applyBatchImputeTest(testN, trainN)
 
-// Solo mostrar las primeras filas
-println("\n--- Muestra de datos Train ---")
-trainM1.select("Date", "Location", "MinTemp", "MaxTemp", "RainToday", "RainTomorrow").show(5)
+println(" Completado\n")
 
-println("\n--- Muestra de datos Test ---")
-testM1.select("Date", "Location", "MinTemp", "MaxTemp", "RainToday", "RainTomorrow").show(5)
+println(" Paso 2: Imputación RainToday (1 JOIN)")
+val trainRain = applyRainTodayImputeTrain(trainNumeric, trainNumeric)
+val testRain = applyRainTodayImputeTest(testNumeric)
+println(" Completado\n")
 
-println("\n✓ Proceso completado exitosamente")
- 
-  
- 
- //=====================================TRANSFORMACIONES =================================
-val trainFinal = trainM3
-val testFinal = testM3
+println(" Paso 3: Imputación viento (1 JOIN)")
+val trainFinal = applyWindImputeTrain(trainRain, trainRain).persist()
+val testFinal = applyWindImputeTest(testRain, trainRain).persist()
+println(" Completado\n")
 
+// === 10) Resumen ===
+println("="*70)
+println("RESUMEN FINAL")
+println("="*70)
+val trainCount = trainFinal.count()
+val testCount = testFinal.count()
+println(s" Train: ${trainCount} | Test: ${testCount}")
+println("\n--- Train Sample ---")
+trainFinal.select("Date","Location","MinTemp","MaxTemp","RainToday","RainTomorrow").show(5, false)
+println("\n--- Test Sample ---")
+testFinal.select("Date","Location","MinTemp","MaxTemp","RainToday","RainTomorrow").show(5, false)
+
+
+revisarNulosYNA(trainFinal, "TRAIN FINAL")
+revisarNulosYNA(testFinal , "TEST FINAL")
+
+
+
+trainN.unpersist()
+testN.unpersist()
+
+println("\n" + "="*70)
+println(" PROCESO COMPLETADO")
  

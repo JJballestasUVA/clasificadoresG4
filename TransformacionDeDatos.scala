@@ -63,7 +63,7 @@ val dropCols = Seq(
   "WindGustSpeed","WindSpeed9am","WindSpeed3pm", // Agrupado en WindSpeed_avg
   "Cloud9am","Cloud3pm",                        // Deamiados nulos
   "WindGustDir","WindDir9am","WindDir3pm",      // TODO: Agrupar
-  "Month","Day", "Year", "DayMonth",
+  "Month","Day", "Year",
   "Evaporation"                                 // Demasiados nulos,
 )
 
@@ -78,7 +78,6 @@ val rainFeaturesDF = va.transform(trainSel).select("features","RainTomorrow")
 
 // Cambiar la label
 val indiceClase= new StringIndexer().setInputCol("RainTomorrow").setOutputCol("label").setStringOrderType("alphabetDesc")
-
 
 
 val rainDF = indiceClase.fit(rainFeaturesDF).transform(rainFeaturesDF).drop("RainTomorrow")
