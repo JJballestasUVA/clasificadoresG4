@@ -7,9 +7,8 @@ import org.apache.spark.sql.types.IntegerType
 
 :load ./PreparationData.scala
 
-// Quitar cuando PreparationData esté completo
-val trainFinal = trainM1
-val testFinal = testM1
+// Comienza con trainFinal y testFinal 
+//
 
 val trainBase = trainFinal.withColumn("Rainfall",col("Rainfall").cast("double"))
 val testBase  = testFinal.withColumn("Rainfall",col("Rainfall").cast("double"))
@@ -64,7 +63,7 @@ val dropCols = Seq(
   "WindGustSpeed","WindSpeed9am","WindSpeed3pm", // Agrupado en WindSpeed_avg
   "Cloud9am","Cloud3pm",                        // Deamiados nulos
   "WindGustDir","WindDir9am","WindDir3pm",      // TODO: Agrupar
-  "Month","Day", "Year",
+  "Month","Day", "Year", "DayMonth",
   "Evaporation"                                 // Demasiados nulos,
 )
 
