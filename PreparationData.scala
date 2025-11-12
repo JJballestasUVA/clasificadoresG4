@@ -27,7 +27,7 @@ val atributosInt = Seq("Cloud9am","Cloud3pm")
 val dfPrepared = weatherDF.select(weatherDF.columns.map { c => if (atributosDouble.contains(c)) col(c).cast("double").alias(c) else if (atributosInt.contains(c)) col(c).cast("int").alias(c) else col(c) }: _*)
 
 // === 3) Utilidades ===
-def isMissingStr(c: Column): Column = es || trim(c) === "" || lower(trim(c)).isin("na","nan","null","n/a","none","missing")
+def isMissingStr(c: Column): Column = esVacioONulo(col(c)) || trim(c) === "" || lower(trim(c)).isin("na","nan","null","n/a","none","missing")
 def isNullNum(c: Column): Column = c.isNull
 
 // === 4) Normalización ===
