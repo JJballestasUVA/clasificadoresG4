@@ -4,6 +4,10 @@
 // TRANSFORMACIÓN DE DATOS
 // ============================================================
 
+def esVacioONulo(c: Column): Column =
+  c.isNull || lower(trim(c.cast("string"))).isin("","na","nan","null","n/a","none","missing")
+
+
 // 1️Crear medias combinadas
 def crearMediasMedidas(df: DataFrame): DataFrame = {
   df.withColumn("Temp_avg", (col("MaxTemp") + col("MinTemp") + col("Temp9am") + col("Temp3pm")) / 4.0)
@@ -40,9 +44,9 @@ val testSel  = testAggClean.drop(dropCols: _*)
 // 6️VectorAssembler
 val va = new VectorAssembler()
   .setOutputCol("features")
-  .setInputCols(trainNum.columns.diff(Array("RainTomorrow")))
+  .setInputCols(trainSel.columns.diff(Array("RainTomorrow")))
 
-val rainFeaturesDF = va.transform(trainNum).select("features", "RainTomorrow")
+val rainFeaturesDF = va.transform(trainSel).select("features", "RainTomorrow")
 
 // 7️Indexar clase
 val indiceClase = new StringIndexer().setInputCol("RainTomorrow").setOutputCol("label").setStringOrderType("alphabetDesc")

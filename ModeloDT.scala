@@ -14,7 +14,7 @@ import org.apache.spark.sql.Row
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 
 
-:load ./TransformacionDeDatos.scala
+:load ./TransformacionDeDatosv1.scala
 
 
 // Partición de los datos (para tener conjunto de prueba para evaluar los árboles)
