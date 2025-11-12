@@ -30,16 +30,12 @@ val dropCols = Seq(
   "WindGustSpeed","WindSpeed9am","WindSpeed3pm",
   "Cloud9am","Cloud3pm",
   "WindGustDir","WindDir9am","WindDir3pm",
-  "Month","Day","Year",
+  "Month","Day","Year", "DayMonth",
   "Evaporation"
 )
 
 val trainSel = trainAggClean.drop(dropCols: _*)
 val testSel  = testAggClean.drop(dropCols: _*)
-
-// 5️Convertir DayMonth a numérico (mantenerlo como feature)
-val trainNum = trainSel.withColumn("DayMonth", col("DayMonth").cast("int"))
-val testNum  = testSel.withColumn("DayMonth", col("DayMonth").cast("int"))
 
 // 6️VectorAssembler
 val va = new VectorAssembler()

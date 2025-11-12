@@ -11,7 +11,7 @@ import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
 import org.apache.spark.sql.Row
 
-
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
 
 
 :load ./TransformacionDeDatos.scala
@@ -37,8 +37,6 @@ val evaluatorF1 = new MulticlassClassificationEvaluator()
 
 // Construccion del Evaluator
 val evaluatorAUC = new BinaryClassificationEvaluator()
-    .setLabelCol("label")
-    .setRawPredictionCol("probability")
     .setMetricName("areaUnderROC")
 
 // Construcción del Grid
