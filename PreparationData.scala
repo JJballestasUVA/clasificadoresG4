@@ -12,6 +12,9 @@ import org.apache.spark.ml.feature.{Imputer, StringIndexer, VectorAssembler, Sta
 
 Logger.getLogger("org.apache.spark.scheduler.DAGScheduler").setLevel(Level.ERROR)
 
+def esVacioONulo(c: Column): Column =
+  c.isNull || lower(trim(c.cast("string"))).isin("","na","nan","null","n/a","none","missing")
+
 val PATH = "."
 val FILE = "weatherAUS.csv"
 
@@ -24,7 +27,7 @@ val atributosInt = Seq("Cloud9am","Cloud3pm")
 val dfPrepared = weatherDF.select(weatherDF.columns.map { c => if (atributosDouble.contains(c)) col(c).cast("double").alias(c) else if (atributosInt.contains(c)) col(c).cast("int").alias(c) else col(c) }: _*)
 
 // === 3) Utilidades ===
-def isMissingStr(c: Column): Column = c.isNull || trim(c) === "" || lower(trim(c)).isin("na","nan","null","n/a","none","missing")
+def isMissingStr(c: Column): Column = es || trim(c) === "" || lower(trim(c)).isin("na","nan","null","n/a","none","missing")
 def isNullNum(c: Column): Column = c.isNull
 
 // === 4) Normalización ===
@@ -83,15 +86,15 @@ def calculateAllStatsForTest(train: DataFrame, numCols: Seq[String], discCols: S
 }
 
 def calculateWindModesForTrain(train: DataFrame): DataFrame = {
-  windDirCols.map { c => train.filter(col(c).isNotNull && !isMissingStr(col(c))).groupBy("Location","DayMonth","RainTomorrow",c).agg(count(lit(1)).alias("cnt")).groupBy("Location","DayMonth","RainTomorrow").agg(expr(s"max_by($c, cnt)").alias(s"${c}_mode")) }.reduce((df1,df2) => df1.join(df2, Seq("Location","DayMonth","RainTomorrow"), "outer"))
+  windDirCols.map { c => train.filter(col(c).isNotNull && !esVacioONulo(col(c))).groupBy("Location","DayMonth","RainTomorrow",c).agg(count(lit(1)).alias("cnt")).groupBy("Location","DayMonth","RainTomorrow").agg(expr(s"max_by($c, cnt)").alias(s"${c}_mode")) }.reduce((df1,df2) => df1.join(df2, Seq("Location","DayMonth","RainTomorrow"), "outer"))
 }
 
 def calculateWindModesForTest(train: DataFrame): DataFrame = {
-  windDirCols.map { c => train.filter(col(c).isNotNull && !isMissingStr(col(c))).groupBy("Location","DayMonth",c).agg(count(lit(1)).alias("cnt")).groupBy("Location","DayMonth").agg(expr(s"max_by($c, cnt)").alias(s"${c}_mode")) }.reduce((df1,df2) => df1.join(df2, Seq("Location","DayMonth"), "outer"))
+  windDirCols.map { c => train.filter(col(c).isNotNull && !esVacioONulo(col(c))).groupBy("Location","DayMonth",c).agg(count(lit(1)).alias("cnt")).groupBy("Location","DayMonth").agg(expr(s"max_by($c, cnt)").alias(s"${c}_mode")) }.reduce((df1,df2) => df1.join(df2, Seq("Location","DayMonth"), "outer"))
 }
 
 def calculateRainTodayModeForTrain(train: DataFrame): DataFrame = {
-  train.withColumn("RainToday", upper(trim(col("RainToday")))).filter(!isMissingStr(col("RainToday"))).groupBy("RainTomorrow","RainToday").agg(count(lit(1)).alias("cnt")).groupBy("RainTomorrow").agg(expr("max_by(RainToday, cnt)").alias("RainToday_mode"))
+  train.withColumn("RainToday", upper(trim(col("RainToday")))).filter(!esVacioONulo(col("RainToday"))).groupBy("RainTomorrow","RainToday").agg(count(lit(1)).alias("cnt")).groupBy("RainTomorrow").agg(expr("max_by(RainToday, cnt)").alias("RainToday_mode"))
 }
 
 // === 8) Imputación principal ===
@@ -105,9 +108,9 @@ def applyBatchImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
   )
   val dfJoined = df.join(statsDF, Seq("Location","DayMonth","RainTomorrow"), "left")
   val imputedCols = df.columns.map { c =>
-    if (normalNumCols.contains(c)) when(col(c).isNull, coalesce(col(s"${c}_mean"))).otherwise(col(c)).alias(c)
-    else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) when(col(c).isNull, coalesce(col(s"${c}_median"))).otherwise(col(c)).alias(c)
-    else if (discreteNumCols.contains(c)) when(col(c).isNull, round(coalesce(col(s"${c}_mean"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
+    if (normalNumCols.contains(c)) when(esVacioONulo(col(c)), coalesce(col(s"${c}_mean"))).otherwise(col(c)).alias(c)
+    else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) when(esVacioONulo(col(c)), coalesce(col(s"${c}_median"))).otherwise(col(c)).alias(c)
+    else if (discreteNumCols.contains(c)) when(esVacioONulo(col(c)), round(coalesce(col(s"${c}_mean"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
     else col(c)
   }
   dfJoined.select(imputedCols: _*)
@@ -123,9 +126,9 @@ def applyBatchImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
   )
   val dfJoined = df.join(statsDF, Seq("Location","DayMonth"), "left")
   val imputedCols = df.columns.map { c =>
-    if (normalNumCols.contains(c)) when(col(c).isNull, col(s"${c}_mean")).otherwise(col(c)).alias(c)
-    else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) when(col(c).isNull, col(s"${c}_median")).otherwise(col(c)).alias(c)
-    else if (discreteNumCols.contains(c)) when(col(c).isNull, round(coalesce(col(s"${c}_mean"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
+    if (normalNumCols.contains(c)) when(esVacioONulo(col(c)), col(s"${c}_mean")).otherwise(col(c)).alias(c)
+    else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) when(esVacioONulo(col(c)), col(s"${c}_median")).otherwise(col(c)).alias(c)
+    else if (discreteNumCols.contains(c)) when(esVacioONulo(col(c)), round(coalesce(col(s"${c}_mean"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
     else col(c)
   }
   dfJoined.select(imputedCols: _*)
@@ -133,24 +136,24 @@ def applyBatchImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
 
 def applyRainTodayImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
   val modeDF = calculateRainTodayModeForTrain(train)
-  df.withColumn("RainToday", upper(trim(col("RainToday")))).join(modeDF, Seq("RainTomorrow"), "left").withColumn("RainToday", when(isMissingStr(col("RainToday")), col("RainToday_mode")).otherwise(col("RainToday"))).drop("RainToday_mode")
+  df.withColumn("RainToday", upper(trim(col("RainToday")))).join(modeDF, Seq("RainTomorrow"), "left").withColumn("RainToday", when(esVacioONulo(col("RainToday")), col("RainToday_mode")).otherwise(col("RainToday"))).drop("RainToday_mode")
 }
 
 def applyRainTodayImputeTest(df: DataFrame): DataFrame = {
-  df.withColumn("RainToday", upper(trim(col("RainToday")))).withColumn("RainToday_pred", when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))).groupBy("DayMonth","RainToday_pred").agg(count(lit(1)).alias("cnt")).groupBy("DayMonth").agg(expr("max_by(RainToday_pred, cnt)").alias("RainToday_mode")).join(df.withColumn("RainToday", upper(trim(col("RainToday")))).withColumn("RainToday_pred", when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))), Seq("DayMonth"), "right").withColumn("RainToday", when(isMissingStr(col("RainToday")), coalesce(col("RainToday_pred"), col("RainToday_mode"))).otherwise(col("RainToday"))).drop("RainToday_pred","RainToday_mode","cnt")
+  df.withColumn("RainToday", upper(trim(col("RainToday")))).withColumn("RainToday_pred", when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))).groupBy("DayMonth","RainToday_pred").agg(count(lit(1)).alias("cnt")).groupBy("DayMonth").agg(expr("max_by(RainToday_pred, cnt)").alias("RainToday_mode")).join(df.withColumn("RainToday", upper(trim(col("RainToday")))).withColumn("RainToday_pred", when(col("Rainfall") > 0.0, lit("Yes")).otherwise(lit("No"))), Seq("DayMonth"), "right").withColumn("RainToday", when(esVacioONulo(col("RainToday")), coalesce(col("RainToday_pred"), col("RainToday_mode"))).otherwise(col("RainToday"))).drop("RainToday_pred","RainToday_mode","cnt")
 }
 
 def applyWindImputeTrain(df: DataFrame, train: DataFrame): DataFrame = {
   val modesDF = calculateWindModesForTrain(train)
   val dfJoined = df.join(modesDF, Seq("Location","DayMonth","RainTomorrow"), "left")
-  val imputedCols = df.columns.map { c => if (windDirCols.contains(c)) when(isMissingStr(col(c)), col(s"${c}_mode")).otherwise(col(c)).alias(c) else col(c) }
+  val imputedCols = df.columns.map { c => if (windDirCols.contains(c)) when(esVacioONulo(col(c)), col(s"${c}_mode")).otherwise(col(c)).alias(c) else col(c) }
   dfJoined.select(imputedCols: _*)
 }
 
 def applyWindImputeTest(df: DataFrame, train: DataFrame): DataFrame = {
   val modesDF = calculateWindModesForTest(train)
   val dfJoined = df.join(modesDF, Seq("Location","DayMonth"), "left")
-  val imputedCols = df.columns.map { c => if (windDirCols.contains(c)) when(isMissingStr(col(c)), col(s"${c}_mode")).otherwise(col(c)).alias(c) else col(c) }
+  val imputedCols = df.columns.map { c => if (windDirCols.contains(c)) when(esVacioONulo(col(c)), col(s"${c}_mode")).otherwise(col(c)).alias(c) else col(c) }
   dfJoined.select(imputedCols: _*)
 }
 
@@ -194,19 +197,19 @@ def applySecondaryImputationTrain(df: DataFrame, train: DataFrame): DataFrame = 
   val imputedCols = df.columns.map { c =>
     if (normalNumCols.contains(c)) {
       // Variables normales: mediana
-      when(col(c).isNull, col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
     }
     else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) {
       // Variables no normales (excepto discretas): mediana
-      when(col(c).isNull, col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
     }
     else if (discreteNumCols.contains(c)) {
       // Variables discretas: media redondeada
-      when(col(c).isNull, round(coalesce(col(s"${c}_mean_sec"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), round(coalesce(col(s"${c}_mean_sec"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
     }
     else if (windDirCols.contains(c)) {
       // Direcciones de viento: moda
-      when(col(c).isNull, col(s"${c}_mode_sec")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), col(s"${c}_mode_sec")).otherwise(col(c)).alias(c)
     }
     else col(c)
   }
@@ -259,19 +262,19 @@ def applySecondaryImputationTest(df: DataFrame, train: DataFrame): DataFrame = {
   val imputedCols = df.columns.map { c =>
     if (normalNumCols.contains(c)) {
       // Variables normales: mediana
-      when(col(c).isNull, col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
     }
     else if (nonNormalNumCols.diff(discreteNumCols).contains(c)) {
       // Variables no normales (excepto discretas): mediana
-      when(col(c).isNull, col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), col(s"${c}_median_sec")).otherwise(col(c)).alias(c)
     }
     else if (discreteNumCols.contains(c)) {
       // Variables discretas: media redondeada
-      when(col(c).isNull, round(coalesce(col(s"${c}_mean_sec"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), round(coalesce(col(s"${c}_mean_sec"), lit(0))).cast("int")).otherwise(col(c)).alias(c)
     }
     else if (windDirCols.contains(c)) {
       // Direcciones de viento: moda
-      when(col(c).isNull, col(s"${c}_mode_sec")).otherwise(col(c)).alias(c)
+      when(esVacioONulo(col(c)), col(s"${c}_mode_sec")).otherwise(col(c)).alias(c)
     }
     else col(c)
   }
@@ -291,9 +294,9 @@ def applyGlobalFallback(df: DataFrame, numCols: Seq[String], discCols: Seq[Strin
   println("  → Aplicando imputación GLOBAL para nulos residuales...")
   val globalStats = calculateGlobalStats(df, numCols, discCols, windCols)
   val imputedCols = df.columns.map { c =>
-    if (numCols.contains(c)) when(col(c).isNull, lit(globalStats(c).asInstanceOf[Double])).otherwise(col(c)).alias(c)
-    else if (discCols.contains(c)) when(col(c).isNull, lit(globalStats(c).asInstanceOf[Int])).otherwise(col(c)).alias(c)
-    else if (windCols.contains(c)) when(col(c).isNull, lit(globalStats(c).asInstanceOf[String])).otherwise(col(c)).alias(c)
+    if (numCols.contains(c)) when(esVacioONulo(col(c)), lit(globalStats(c).asInstanceOf[Double])).otherwise(col(c)).alias(c)
+    else if (discCols.contains(c)) when(esVacioONulo(col(c)), lit(globalStats(c).asInstanceOf[Int])).otherwise(col(c)).alias(c)
+    else if (windCols.contains(c)) when(esVacioONulo(col(c)), lit(globalStats(c).asInstanceOf[String])).otherwise(col(c)).alias(c)
     else col(c)
   }
   df.select(imputedCols: _*)
@@ -304,7 +307,7 @@ def revisarNulosYNA(df: DataFrame, nombre: String): Unit = {
   println(s"\n  $nombre")
   println("=" * 60)
   val tokens = Seq("na","n/a","null","none","missing","-","?")
-  val resumen = df.columns.map { c => (c, df.filter(col(c).isNull).count(), df.filter(lower(trim(col(c))).isin(tokens: _*)).count()) }.filter(r => r._2 + r._3 > 0)
+  val resumen = df.columns.map { c => (c, df.filter(esVacioONulo(col(c))).count(), df.filter(lower(trim(col(c))).isin(tokens: _*)).count()) }.filter(r => r._2 + r._3 > 0)
   if (resumen.isEmpty) println("  ✅ No hay valores nulos") else resumen.toSeq.toDF("Columna","Nulos","NA").show(false)
 }
 

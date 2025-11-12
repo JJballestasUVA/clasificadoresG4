@@ -1,11 +1,12 @@
-import org.apache.spark.ml.classification.RandomForestClassificationModel
+import org.apache.spark.ml.classification.DecisionTreeClassificationModel
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
-import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics
-import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics 
 import org.apache.spark.sql.{DataFrame, Column}
 
-val RFModel = RandomForestClassificationModel.load("./ModeloRF")
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
+
+val DTModel = DecisionTreeClassificationModel.load("./ModeloDT")
 
 
 def prepararTestDF(testDF:DataFrame): DataFrame ={
@@ -22,48 +23,35 @@ def prepararTestDF(testDF:DataFrame): DataFrame ={
 
 val rainTestDF = prepararTestDF(testSel)
 
-val predicciones = RFModel.transform(rainTestDF)
-
-val predictionsAndLabelsDF_RF = predicciones.select("prediction", "label")
+val predicciones = DTModel.transform(rainTestDF)
+val predictionsAndLabelsDF_DT = predicciones.select("prediction", "label")
 
 
 import org.apache.spark.ml.linalg.Vector
 
 
 // Tasa de error, des. estándar e intervalo de confianza
-val multiEvaluator = new MulticlassClassificationEvaluator().setMetricName("accuracy")
-val tasa_acierto = multiEvaluator.evaluate(predicciones)
-val tasa_error = 1.0 - tasa_acierto
+val multiEvaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("label")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
 
-val tasaError = 1- accuracy.evaluate(predicciones)
-println("Tasa de error: " + tasaError)
-
-val metrics = new MulticlassMetrics(predictionsAndLabelsDF_RT)
-val accuracy = metrics.accuracy
-val tasaError = accuracy // Es accuracy ya que la clase dominante es la negativa
+val tasaError = 1- multiEvaluator.evaluate(predicciones)
 println("Tasa de error: " + tasaError)
 
 val N =predicciones.count()
 val errorStd =  math.sqrt(tasaError * (1 - tasaError) / N)
 println("Desviación típica del error: " + errorStd)
 
-val z = 1.96                // z para 95%
-
-val errorStd = math.sqrt(p * (1 - p) / n)
 val icInf = tasaError - z * errorStd
 val icSup = tasaError + z * errorStd
 
 println(f"Intervalo de confianza 95%%: [${icInf}%.4f , ${icSup}%.4f]")
 
-val errores = predictionsAndLabelsDF_RF.map(x => if (x(0) == x(1)) 0 else 1).collect.sum
-
-val tasaDeError = errores.toDouble/predictionsAndLabels.count
 
 // Matriz de confusión
 
 // Usamos RRDs para construir la matriz de confusión
-import org.apache.spark.mllib.evaluation.MulticlassMetrics
-
 val predictionsAndLabels = predicciones.select("prediction","label").rdd.map{row => (row.getDouble(0), row.getDouble(1))}
 val metrics = new MulticlassMetrics(predictionsAndLabels)
 // Matriz de confusión
@@ -76,6 +64,7 @@ val tn = confusionMatrix(0, 0)
 val fp = confusionMatrix(0, 1)
 val fn = confusionMatrix(1, 0)
 val tp = confusionMatrix(1, 1)
+
 // PAra los siguientes apartados, neceistamos las equitquetas orginales ( 0 == "Yes", 1 == "No"))
 import org.apache.spark.ml.feature.IndexToString
 
@@ -88,9 +77,7 @@ clasesDF.show
 //Tasa de aciertos positivos 
 //
 val labels = Array(0.0,1.0)
-
-// Tasa de ciertos positivos
-val multiEvaluator = new MulticlassClassificationEvaluator().setMetricName("truePositiveRateByLabel")
+multiEvaluator.setMetricName("truePositiveRateByLabel")
 
 println(f"%nTasa de ciertos positivos por etiqueta:")
 labels.foreach {l =>
@@ -98,11 +85,21 @@ labels.foreach {l =>
               val tp = multiEvaluator.evaluate(predicciones)
               println(f"truePositiveRateByLabel($l) = $tp%1.4f")}
 
-// Ciertos positivos ponderados
+//
+// Calculamos truePositiveRate ponderada
+//
+//
 multiEvaluator.setMetricName("weightedTruePositiveRate")
 
+val ponderada = multiEvaluator.evaluate(predicciones)
+println(f"%nTasa de ciertos positivos ponderada: $ponderada%1.4f")
+
 // Tasa de falsos positivos
-val multiEvaluator = new MulticlassClassificationEvaluator().setMetricName("falsePositiveRateByLabel")
+//
+// Calculamos falsePositiveRateByLabel  para cada etiqueta
+//
+//
+multiEvaluator.setMetricName("falsePositiveRateByLabel")
 
 println(f"%nTasa de falsos positivos por etiqueta:")
 labels.foreach {l =>
@@ -110,16 +107,20 @@ labels.foreach {l =>
               val fp = multiEvaluator.evaluate(predicciones)
               println(f"falsePositiveRateByLabel($l) = $fp%1.4f")}
 
-// Falsos positivos ponderados
+//
+// Calculamos falsePositiveRate ponderada
+//
+//
 multiEvaluator.setMetricName("weightedFalsePositiveRate")
+
+val ponderada =multiEvaluator.evaluate(predicciones)
+println(f"%nTasa de falsos positivos ponderada: $ponderada%1.4f")
 
 
 // AUC-ROC
-val binaryMetrics = new BinaryClassificationEvaluator().setRawPredictionCol("probability")
+val binaryMetrics = new BinaryClassificationEvaluator().setRawPredictionCol("prediction")
 val ML_aucROC = binaryMetrics.evaluate(predicciones)
 println(f"%nAUC de la curva ROC (con ML):  $ML_aucROC%1.4f%n")
-
-
 val prediccionesRDD = predicciones.rdd.map(row => (row.getDouble(4), row.getDouble(0)))
 
 
@@ -135,7 +136,7 @@ val MLlib_binarymetrics = new BinaryClassificationMetrics(probabilitiesAndLabels
 
 /* Calculamos Área bajo la curva ROC, auROC      */
 //  AUC=0.83
-val MLlib_auROC = MLlib_binarymetrics.areaUnderROC
+val MLlib_aucROC = MLlib_binarymetrics.areaUnderROC
 // val MLlib_aucROC = binaryMetrics.areaUnderROC
 println(f"%nAUC de la curva ROC (17 bins):  $MLlib_aucROC%1.4f%n")
 
@@ -149,14 +150,6 @@ MLlib_curvaROC.take(17).foreach(x => println(x))
 // Area bajo curva PR
 val MLlib_auPR = MLlib_binarymetrics.areaUnderPR
 // val MLlib_aucROC = binaryMetrics.areaUnderROC
-println(f"%nAUC de la curva PR (17 bins):  $MLlib_auPR%1.4f%n")
-
-
-
-
-
-
-
-
+println(f"%nAUC de la curva PR:  $MLlib_auPR%1.4f%n")
 
 
