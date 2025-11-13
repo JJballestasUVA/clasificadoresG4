@@ -3,31 +3,32 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
 import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics 
 import org.apache.spark.sql.{DataFrame, Column}
-
+import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.ml.feature.{Imputer, StringIndexer, VectorAssembler, StandardScaler}
+import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.ml.feature.IndexToString
 
 val DTModel = DecisionTreeClassificationModel.load("./ModeloDT")
 
 
 def prepararTestDF(testDF:DataFrame): DataFrame ={
-    val va = new VectorAssembler().setOutputCol("features").setInputCols(testSel.columns.diff(Array("RainTomorrow")))
+    val va = new VectorAssembler().setOutputCol("features").setInputCols(testDF.columns.diff(Array("RainTomorrow")))
     // Cambiar la label
     val indiceClase= new StringIndexer().setInputCol("RainTomorrow").setOutputCol("label").setStringOrderType("alphabetDesc")
 
-    val rainFeaturesDF = va.transform(testSel).select("features","RainTomorrow")
+    val rainFeaturesDF = va.transform(testDF).select("features","RainTomorrow")
 
     return indiceClase.fit(rainFeaturesDF).transform(rainFeaturesDF).drop("RainTomorrow")
 }
 
+val testDF = spark.read.option("header", "true").option("inferSchema", "true") .csv("ConjuntoEntrenamiento")
 
-
-val rainTestDF = prepararTestDF(testSel)
+val rainTestDF = prepararTestDF(testDF)
 
 val predicciones = DTModel.transform(rainTestDF)
 val predictionsAndLabelsDF_DT = predicciones.select("prediction", "label")
 
-
-import org.apache.spark.ml.linalg.Vector
 
 
 // Tasa de error, des. estándar e intervalo de confianza
@@ -42,7 +43,7 @@ println("Tasa de error: " + tasaError)
 val N =predicciones.count()
 val errorStd =  math.sqrt(tasaError * (1 - tasaError) / N)
 println("Desviación típica del error: " + errorStd)
-
+val z = 1.96 // Valor asociado a al intervalo de consfianza de 95%
 val icInf = tasaError - z * errorStd
 val icSup = tasaError + z * errorStd
 
@@ -65,8 +66,7 @@ val fp = confusionMatrix(0, 1)
 val fn = confusionMatrix(1, 0)
 val tp = confusionMatrix(1, 1)
 
-// PAra los siguientes apartados, neceistamos las equitquetas orginales ( 0 == "Yes", 1 == "No"))
-import org.apache.spark.ml.feature.IndexToString
+// Para los siguientes apartados, neceistamos las equitquetas orginales ( 0 == "Yes", 1 == "No"))
 
 val labelsDF= predicciones.select("label").distinct
 val converter = new IndexToString().setInputCol("label").setOutputCol("Clase original")
@@ -126,7 +126,6 @@ val prediccionesRDD = predicciones.rdd.map(row => (row.getDouble(4), row.getDoub
 
 /* Y los puntos de la curva ROC */
 // Curva ROC conMLlib
-val MLlib_curvaROC =MLlib_binarymetrics.roc
 
 val probabilitiesAndLabelsRDD = predicciones.select("label", "probability").rdd.map{row => (row.getAs[Vector](1).toArray, row.getDouble(0))}.map{r => ( r._1(1), r._2)}
 println(f"%nRDD probabilitiesAndLabels:")

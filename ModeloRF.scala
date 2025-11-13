@@ -3,6 +3,7 @@ import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.feature.{HashingTF, Tokenizer}
 import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{MulticlassClassificationEvaluator, BinaryClassificationEvaluator}
 import org.apache.spark.sql.Row
 /// Modelo avanzado Gradient Boosted Tree
 :load ./TransformacionDeDatos.scala

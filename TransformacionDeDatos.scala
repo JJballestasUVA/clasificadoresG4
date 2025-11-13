@@ -53,6 +53,12 @@ val indiceClase = new StringIndexer().setInputCol("RainTomorrow").setOutputCol("
 
 val rainDF = indiceClase.fit(rainFeaturesDF).transform(rainFeaturesDF).drop("RainTomorrow")
 
+// Guardamos el conjunto de entrenamiento en un csv para poder
+testSel.write
+  .option("header", "true")
+  .mode("overwrite")
+  .csv("ConjuntoEntrenamiento")
+
 rainDF.show(5)
 /* // No es necesario ya que CrossValidation hace la particion
 val Array(trainRainDF, testRainDF) = rainDF.randomSplit(Array(0.66, 0.34), seed=0)
